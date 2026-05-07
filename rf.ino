@@ -11,7 +11,7 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 #define NEO_COUNT  7
 Adafruit_NeoPixel strip(NEO_COUNT, NEO_PIN, NEO_GRB + NEO_KHZ800);
 
-// RF - tre moduler
+// RF - three modules
 const int PIN_X = A0;
 const int PIN_Y = A1;
 const int PIN_Z = A2;
@@ -20,22 +20,29 @@ const float SLOPE     = 0.0228f;
 const float INTERCEPT = 0.4f;
 const float EMA_ALPHA = 0.2f;
 
-// EMA og last per akse
+// EMA and last per axis
 float emaX = -55.0f, emaY = -55.0f, emaZ = -55.0f;
 float lastX = -55.0f, lastY = -55.0f, lastZ = -55.0f;
 
 float baselineX = 0.0f, baselineY = 0.0f, baselineZ = 0.0f;
 
-// Eksponeringsgrænser i dBm (til farveskala og bjælke)
-// Justér disse efter dit miljø
-const float EXP_LOW  = -60.0f; // Grøn — lav eksponering
-const float EXP_HIGH = -20.0f; // Rød  — høj eksponering
+// Exposure limits in dBm
+const float EXP_LOW    = -50.0f; // Green — low exposure
+const float EXP_HIGH   = -30.0f; // Red  — high exposure
+const float EXP_THRESH = -55.0f; // Under this threshold, NeoPixel turns off
 
-// Knapper
+// Buttons
 const int BTN_SCREEN = PC13;
 int screen = 0;
 
-// ---- Læs én akse ----
+// Forward declarations
+void updateNeoPixel(float exposure);
+void printBar(float exposure);
+void setBaseline();
+float readAxis(int pin, float &ema, float &last);
+float combineAxes(float dX, float dY, float dZ);
+
+// ---- Read one axis ----
 float readAxis(int pin, float &ema, float &last) {
   int numSamples = (ema < -45.0f) ? 128 : 64;
   long sum = 0;
@@ -58,7 +65,7 @@ float readAxis(int pin, float &ema, float &last) {
   return ema;
 }
 
-// ---- Kombiner tre akser til samlet eksponering ----
+// ---- Combine the three axes to one exposure ----
 float combineAxes(float dX, float dY, float dZ) {
   float linX = pow(10.0f, dX / 10.0f);
   float linY = pow(10.0f, dY / 10.0f);
@@ -66,13 +73,13 @@ float combineAxes(float dX, float dY, float dZ) {
   return 10.0f * log10(linX + linY + linZ);
 }
 
-// ---- Sæt baseline ----
+// ---- Set the baseline ----
 void setBaseline() {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Saetter baseline");
+  lcd.print("Defines baseline");
   lcd.setCursor(0, 1);
-  lcd.print("Vent venligst...");
+  lcd.print("Please wait...");
 
   float sumX = 0, sumY = 0, sumZ = 0;
   for (int i = 0; i < 10; i++) {
@@ -87,34 +94,40 @@ void setBaseline() {
 
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Baseline sat!");
+  lcd.print("Baseline set!");
   lcd.setCursor(0, 1);
-  lcd.print("Klar til maling");
+  lcd.print("Ready to read");
   delay(1500);
   lcd.clear();
 }
 
-// ---- NeoPixel farveskala ----
+// ---- NeoPixel VU-meter ----
 void updateNeoPixel(float exposure) {
   float t = (exposure - EXP_LOW) / (EXP_HIGH - EXP_LOW);
   t = max(0.0f, min(1.0f, t));
 
-  uint8_t r = 0, g = 0, b = 0;
-  if (t < 0.5f) {
-    r = (uint8_t)(t * 2.0f * 255);
-    g = 255;
-  } else {
-    r = 255;
-    g = (uint8_t)((1.0f - (t - 0.5f) * 2.0f) * 255);
-  }
+  int lit = (int)(t * NEO_COUNT);
 
   for (int i = 0; i < NEO_COUNT; i++) {
-    strip.setPixelColor(i, strip.Color(r, g, b));
+    if (i >= lit) {
+      strip.setPixelColor(i, strip.Color(0, 0, 0));
+    } else {
+      float pos = (float)i / (NEO_COUNT - 1);
+      uint8_t r = 0, g = 0, b = 0;
+      if (pos < 0.5f) {
+        r = (uint8_t)(pos * 2.0f * 255);
+        g = 255;
+      } else {
+        r = 255;
+        g = (uint8_t)((1.0f - (pos - 0.5f) * 2.0f) * 255);
+      }
+      strip.setPixelColor(i, strip.Color(r, g, b));
+    }
   }
   strip.show();
 }
 
-// ---- LCD bjælke (12 tegn bred) ----
+// ---- LCD bar (12 wide) ----
 void printBar(float exposure) {
   float t = (exposure - EXP_LOW) / (EXP_HIGH - EXP_LOW);
   t = max(0.0f, min(1.0f, t));
@@ -141,10 +154,11 @@ void setup() {
   lcd.begin(16, 2);
   lcd.backlight();
   lcd.setCursor(0, 0);
-  lcd.print("RF Eksponeringm.");
+  lcd.print("RF Exposure");
 
-  // strip.begin();
-  // strip.setBrightness(80);
+  strip.begin();
+  strip.setBrightness(30);
+  strip.show();
 
   delay(1000);
   setBaseline();
@@ -154,7 +168,7 @@ void setup() {
 void loop() {
   static bool lastScreenState = HIGH;
 
-  // Skift skærm
+  // Change screen
   bool screenState = digitalRead(BTN_SCREEN);
   if (screenState == LOW && lastScreenState == HIGH) {
     screen = (screen + 1) % 2;
@@ -162,19 +176,18 @@ void loop() {
   }
   lastScreenState = screenState;
 
-  // Læs alle tre akser
+  // Read all three axes
   float dX = readAxis(PIN_X, emaX, lastX);
   float dY = readAxis(PIN_Y, emaY, lastY);
   float dZ = readAxis(PIN_Z, emaZ, lastZ);
 
-  // Samlet eksponering
+  // Combined exposure
   float exposure = combineAxes(dX, dY, dZ);
 
-  // Opdatér NeoPixel
-  // updateNeoPixel(exposure); // Genkommenter når strip er sat på
+  // Update NeoPixel
+  updateNeoPixel(exposure);
 
   if (screen == 0) {
-    // Skærm 0: samlet eksponering + bjælke
     lcd.setCursor(0, 0);
     lcd.print("Exp:");
     lcd.print(exposure, 1);
@@ -183,7 +196,6 @@ void loop() {
     printBar(exposure);
 
   } else {
-    // Skærm 1: de tre akser enkeltvis
     lcd.setCursor(0, 0);
     lcd.print("X:");
     lcd.print(dX, 1);
@@ -196,7 +208,6 @@ void loop() {
     lcd.print("            ");
   }
 
-  // Serial output
   Serial.print("X: ");   Serial.print(dX, 1);
   Serial.print(" Y: ");  Serial.print(dY, 1);
   Serial.print(" Z: ");  Serial.print(dZ, 1);
