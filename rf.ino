@@ -39,8 +39,12 @@ const float EXP_HIGH   = -30.0f;
 const float EXP_THRESH = -55.0f;
 
 // Buttons
-const int BTN_SCREEN = PC13;
+const int BTN_SCREEN = PC13; // do we need this??
+const int SWITCH_PIN = D5; // turning on/off
 int screen = 0;
+bool powered = true;
+
+bool lastScreenState = HIGH;
 
 // Forward declarations
 void updateNeoPixel(float exposure);
@@ -84,6 +88,20 @@ float combineAxes(float dX, float dY, float dZ) {
   return 10.0f * log10(linX + linY + linZ);
 }
 
+// global powerOff-function
+void powerOff() {
+  powered = false;
+
+  strip.clear();
+  strip.show();
+
+  lcd.clear();
+  lcd.noBacklight();
+
+  noTone(BUZZER_PIN);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
 // ---- Set the baseline ----
 void setBaseline() {
   lcd.clear();
@@ -94,6 +112,11 @@ void setBaseline() {
 
   float sumX = 0, sumY = 0, sumZ = 0;
   for (int i = 0; i < 10; i++) {
+    if (digitalRead(SWITCH_PIN) == HIGH) {
+      powerOff();
+      return;
+      }
+
     sumX += readAxis(PIN_X, emaX, lastX);
     if (ACTIVE_AXES >= 2) sumY += readAxis(PIN_Y, emaY, lastY);
     if (ACTIVE_AXES >= 3) sumZ += readAxis(PIN_Z, emaZ, lastZ);
@@ -108,7 +131,13 @@ void setBaseline() {
   lcd.print("Baseline set!");
   lcd.setCursor(0, 1);
   lcd.print("Ready to read");
-  delay(1500);
+
+  for (int i = 0; i < 15; i++) {
+    if (digitalRead(SWITCH_PIN) == HIGH) {
+      powerOff();
+      return; }
+    delay(100);
+  }
   lcd.clear();
 }
 
@@ -177,9 +206,10 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   pinMode(BTN_SCREEN, INPUT_PULLUP);
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
 
-  Wire.setSDA(PB9);
-  Wire.setSCL(PB8);
+  Wire.setSDA(D14);
+  Wire.setSCL(D15);
   Wire.begin();
 
   lcd.begin(16, 2);
@@ -192,12 +222,40 @@ void setup() {
   strip.show();
 
   delay(1000);
+if (digitalRead(SWITCH_PIN) == LOW) {
   setBaseline();
+} else {
+  powered = false;
+  lcd.noBacklight();
+  lcd.clear();
+}
 }
 
 // ---- Loop ----
 void loop() {
-  static bool lastScreenState = HIGH;
+  // Toggle on/off
+bool switchState = digitalRead(SWITCH_PIN);
+
+if (switchState == LOW && !powered) {
+  powered = true;
+  screen = 0;
+  emaX = -55.0f; emaY = -55.0f; emaZ = -55.0f;
+  lastX = -55.0f; lastY = -55.0f; lastZ = -55.0f;
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("RF Exposure");
+  delay(1000);
+  setBaseline();
+}
+
+if (switchState == HIGH && powered) {
+  powerOff();
+}
+
+if (!powered) {
+  delay(100);
+  return;
+}
 
   // Change screen
   bool screenState = digitalRead(BTN_SCREEN);
