@@ -20,6 +20,13 @@ const float SLOPE     = 0.0228f;
 const float INTERCEPT = 0.4f;
 const float EMA_ALPHA = 0.2f;
 
+const int ACTIVE_AXES = 3; // Change to 2 or 3 when adding modules
+
+// Buzzer
+const int BUZZER_PIN    = D9;
+const float BUZZ_THRESH = -40.0f;
+unsigned long lastBuzz  = 0;
+
 // EMA and last per axis
 float emaX = -55.0f, emaY = -55.0f, emaZ = -55.0f;
 float lastX = -55.0f, lastY = -55.0f, lastZ = -55.0f;
@@ -27,9 +34,9 @@ float lastX = -55.0f, lastY = -55.0f, lastZ = -55.0f;
 float baselineX = 0.0f, baselineY = 0.0f, baselineZ = 0.0f;
 
 // Exposure limits in dBm
-const float EXP_LOW    = -50.0f; // Green — low exposure
-const float EXP_HIGH   = -30.0f; // Red  — high exposure
-const float EXP_THRESH = -55.0f; // Under this threshold, NeoPixel turns off
+const float EXP_LOW    = -50.0f;
+const float EXP_HIGH   = -30.0f;
+const float EXP_THRESH = -55.0f;
 
 // Buttons
 const int BTN_SCREEN = PC13;
@@ -37,6 +44,7 @@ int screen = 0;
 
 // Forward declarations
 void updateNeoPixel(float exposure);
+void updateBuzzer(float exposure);
 void printBar(float exposure);
 void setBaseline();
 float readAxis(int pin, float &ema, float &last);
@@ -65,11 +73,14 @@ float readAxis(int pin, float &ema, float &last) {
   return ema;
 }
 
-// ---- Combine the three axes to one exposure ----
+// ---- Combine axes based on how many are active ----
 float combineAxes(float dX, float dY, float dZ) {
   float linX = pow(10.0f, dX / 10.0f);
   float linY = pow(10.0f, dY / 10.0f);
   float linZ = pow(10.0f, dZ / 10.0f);
+
+  if (ACTIVE_AXES == 1) return dX;
+  if (ACTIVE_AXES == 2) return 10.0f * log10(linX + linY);
   return 10.0f * log10(linX + linY + linZ);
 }
 
@@ -84,8 +95,8 @@ void setBaseline() {
   float sumX = 0, sumY = 0, sumZ = 0;
   for (int i = 0; i < 10; i++) {
     sumX += readAxis(PIN_X, emaX, lastX);
-    sumY += readAxis(PIN_Y, emaY, lastY);
-    sumZ += readAxis(PIN_Z, emaZ, lastZ);
+    if (ACTIVE_AXES >= 2) sumY += readAxis(PIN_Y, emaY, lastY);
+    if (ACTIVE_AXES >= 3) sumZ += readAxis(PIN_Z, emaZ, lastZ);
     delay(100);
   }
   baselineX = sumX / 10.0f;
@@ -101,7 +112,6 @@ void setBaseline() {
   lcd.clear();
 }
 
-// ---- NeoPixel VU-meter ----
 void updateNeoPixel(float exposure) {
   float t = (exposure - EXP_LOW) / (EXP_HIGH - EXP_LOW);
   t = max(0.0f, min(1.0f, t));
@@ -109,10 +119,10 @@ void updateNeoPixel(float exposure) {
   int lit = (int)(t * NEO_COUNT);
 
   for (int i = 0; i < NEO_COUNT; i++) {
-    if (i >= lit) {
+    if (i < (NEO_COUNT - lit)) {
       strip.setPixelColor(i, strip.Color(0, 0, 0));
     } else {
-      float pos = (float)i / (NEO_COUNT - 1);
+      float pos = (float)(NEO_COUNT - 1 - i) / (NEO_COUNT - 1); // <-- vendt om
       uint8_t r = 0, g = 0, b = 0;
       if (pos < 0.5f) {
         r = (uint8_t)(pos * 2.0f * 255);
@@ -125,6 +135,24 @@ void updateNeoPixel(float exposure) {
     }
   }
   strip.show();
+}
+
+// ---- Buzzer ----
+void updateBuzzer(float exposure) {
+  if (exposure < BUZZ_THRESH) {
+    digitalWrite(BUZZER_PIN, LOW);
+    return;
+  }
+
+  float t = (exposure - BUZZ_THRESH) / (EXP_HIGH - BUZZ_THRESH);
+  t = max(0.0f, min(1.0f, t));
+
+  unsigned long interval = (unsigned long)(800 - t * 700);
+
+  if (millis() - lastBuzz > interval) {
+    lastBuzz = millis();
+    tone(BUZZER_PIN, 1000, 50);
+  }
 }
 
 // ---- LCD bar (12 wide) ----
@@ -144,6 +172,9 @@ void printBar(float exposure) {
 void setup() {
   Serial.begin(115200);
   analogReadResolution(12);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
   pinMode(BTN_SCREEN, INPUT_PULLUP);
 
@@ -176,16 +207,19 @@ void loop() {
   }
   lastScreenState = screenState;
 
-  // Read all three axes
+  // Read active axes
   float dX = readAxis(PIN_X, emaX, lastX);
-  float dY = readAxis(PIN_Y, emaY, lastY);
-  float dZ = readAxis(PIN_Z, emaZ, lastZ);
+  float dY = (ACTIVE_AXES >= 2) ? readAxis(PIN_Y, emaY, lastY) : -70.0f;
+  float dZ = (ACTIVE_AXES >= 3) ? readAxis(PIN_Z, emaZ, lastZ) : -70.0f;
 
   // Combined exposure
   float exposure = combineAxes(dX, dY, dZ);
 
   // Update NeoPixel
   updateNeoPixel(exposure);
+
+  // Update buzzer
+  updateBuzzer(exposure);
 
   if (screen == 0) {
     lcd.setCursor(0, 0);
