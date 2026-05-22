@@ -52,9 +52,6 @@ float emaX = -55.0f, emaY = -55.0f, emaZ = -55.0f;
 // Previous EMA values per axis - detecting and rejectting sudden jumps (>20 dBm change)
 float lastX = -55.0f, lastY = -55.0f, lastZ = -55.0f;
 
-// Saved the radiation from the background at startup - not used atm
-float baselineX = 0.0f, baselineY = 0.0f, baselineZ = 0.0f;
-
 // Exposure limits in dBm
 const float EXP_LOW    = -50.0f;       // The bottom of the scale (all LEDs off)
 const float EXP_HIGH   = -30.0f;       // The top of the scale (all LEDs on)
@@ -86,7 +83,7 @@ float readAxis(int pin, float &ema, float &last, float offset) {
   long sum = 0;
   for (int i = 0; i < numSamples; i++) {
     sum += analogRead(pin);
-    delayMicroseconds(100); // Small delay between samples to avoid reading the same ADC (Analog to Converter) convertion twince
+    delayMicroseconds(100); // Small delay between samples to avoid reading the same ADC (Analog to digital Converter) convertion twice
   }
 
   float raw             = sum / (float)numSamples;      // Average raw ADC value (0-4095 at 12-bit)
@@ -103,7 +100,7 @@ float readAxis(int pin, float &ema, float &last, float offset) {
   }
 
   last = ema;
-  return ema + offset;    // hardware offret bf returning
+  return ema + offset;    // hardware offset bf returning
 }
 
 // Combine readings from active axes into a signel value in dBm
@@ -147,40 +144,31 @@ void powerOff() {
   digitalWrite(BUZZER_PIN, LOW);
 }
 
-// Measurement of the bg RF level across all active axes and saves it as a baseline
-// Takes 10 samples with 100ms spacing - around 1 second total
-// The device turns off immediately, if the switch is flipped during calibrations
+// Warms up the EMA filters by running 10 samples with 100ms spacing (~1 second total)
+// Gives the filters time to stabilize before measurements are shown
+// The device turns off immediately if the switch is flipped during warmup
 void setBaseline() {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Defines baseline");
+  lcd.print("Warming up...");
   lcd.setCursor(0, 1);
   lcd.print("Please wait...");
 
-  float sumX = 0, sumY = 0, sumZ = 0;
   for (int i = 0; i < 10; i++) {
     if (digitalRead(SWITCH_PIN) == HIGH) {
       powerOff();
       return;
     }
-    sumX += readAxis(PIN_X, emaX, lastX, OFFSET_X);
-if (ACTIVE_AXES >= 2) sumY += readAxis(PIN_Y, emaY, lastY, OFFSET_Y);
-if (ACTIVE_AXES >= 3) sumZ += readAxis(PIN_Z, emaZ, lastZ, OFFSET_Z);
+    readAxis(PIN_X, emaX, lastX, OFFSET_X);
+    if (ACTIVE_AXES >= 2) readAxis(PIN_Y, emaY, lastY, OFFSET_Y);
+    if (ACTIVE_AXES >= 3) readAxis(PIN_Z, emaZ, lastZ, OFFSET_Z);
     delay(100);
   }
 
-  // Store the average of 10 samples as the baseline for each axis
-  baselineX = sumX / 10.0f;
-  baselineY = sumY / 10.0f;
-  baselineZ = sumZ / 10.0f;
-
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Baseline set!");
-  lcd.setCursor(0, 1);
-  lcd.print("Ready to read");
+  lcd.print("Ready!");
 
-  // Show confirmation messae for 1.5 seconds, checking switch in the meantime
   for (int i = 0; i < 15; i++) {
     if (digitalRead(SWITCH_PIN) == HIGH) {
       powerOff();
